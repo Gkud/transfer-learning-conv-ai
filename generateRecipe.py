@@ -6,5 +6,6 @@ def create_recipe():
     gpt2.load_gpt2(sess, run_name='run1')
 
     text = gpt2.generate(sess)
+    text = "\n".join(text.split("."))
     print(text)
 
