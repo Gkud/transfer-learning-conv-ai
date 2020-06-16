@@ -167,8 +167,8 @@ def run():
         out_text = tokenizer.decode(out_ids, skip_special_tokens=True)
         print(out_text)
         utt = utt + 1
-        if utt + 1 == conv_len:
-            if not out_text.endswith("?"):
+        if utt == conv_len:
+            if out_text.endswith("?"):
                 utt = utt - 1
 
 
