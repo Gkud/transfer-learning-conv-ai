@@ -15,12 +15,14 @@ import torch.nn.functional as F
 from transformers import OpenAIGPTLMHeadModel, OpenAIGPTTokenizer, GPT2LMHeadModel, GPT2Tokenizer, pipeline
 from train import SPECIAL_TOKENS, build_input_from_segments, add_special_tokens_
 from utils import get_dataset, download_pretrained_model
-from nltk import word_tokenize
 
 import nltk
-nltk.download('punkt')
+nltk.download('vader_lexicon')
+from nltk import word_tokenize
+from nltk.sentiment.vader import SentimentIntensityAnalyzer
+sentiment = SentimentIntensityAnalyzer()
 
-
+from generateRecipe import create_recipe
 import random
 summarizer = pipeline(task="summarization")
 
@@ -125,17 +127,14 @@ def run():
     parser.add_argument("--top_p", type=float, default=0.9, help="Nucleus filtering (top-p) before sampling (<=0.0: no filtering)")
     parser.add_argument("--conv_limit", type=int, default=None, help="Length of conversation - number of times Speaker1 can respond")
 
+
     args = parser.parse_args()
 
-    logging.basicConfig(level=logging.INFO)
-    logger = logging.getLogger(__file__)
-    logger.info(pformat(args))
+    #logging.basicConfig(level=logging.INFO)
+    #logger = logging.getLogger(__file__)
+    #logger.info(pformat(args))
 
-    if args.model_checkpoint == "":
-        if args.model == 'gpt2':
-            raise ValueError("Interacting with GPT2 requires passing a finetuned model_checkpoint")
-        else:
-            args.model_checkpoint = download_pretrained_model()
+
 
 
     if args.seed != 0:
@@ -144,74 +143,101 @@ def run():
     	torch.cuda.manual_seed(args.seed)
 
 
-    logger.info("Get pretrained model and tokenizer")
-    tokenizer_class, model_class = (GPT2Tokenizer, GPT2LMHeadModel) if args.model == 'gpt2' else (OpenAIGPTTokenizer, OpenAIGPTLMHeadModel)
-    tokenizer = tokenizer_class.from_pretrained(args.model_checkpoint)
-    model = model_class.from_pretrained(args.model_checkpoint)
-    model.to(args.device)
-    add_special_tokens_(model, tokenizer)
 
-    logger.info("Sample a personality")
-    dataset = get_dataset(tokenizer, args.dataset_path, args.dataset_cache)
-    personalities = [dialog["personality"] for dialog in dataset]
-    personality = random.choice(personalities)
-    logger.info("Selected personality: %s", tokenizer.decode(chain(*personality)))
+    print("Select type of chat:\n1. Counselling\n2. Task-Oriented")
+    raw_text = input(">>> ")
 
+    initial = ["Will you like to learn a new recipe?", "Do you want to learn a new recipe?", "Let us learn a new recipe."]
     sents = ["To sum up, ", "Thus, as I understand, ", "So, to summarize, "]
 
-    if args.conv_limit:
-        conv_len = args.conv_limit
-    else:
-        conv_len = -1
-
-    text_summary = []
-    utt = 0
     history = []
 
-    # iterate the loop until conversation limit is reached
-    # if the last reponse is a question, continue the conversation despite the limit
-    while utt != conv_len:
-        raw_text = input(">>> ")
-        while not raw_text:
-            print('Prompt should not be empty!')
+    if raw_text == "1":
+        if args.model_checkpoint == "":
+            if args.model == 'gpt2':
+                raise ValueError("Interacting with GPT2 requires passing a finetuned model_checkpoint")
+            else:
+                args.model_checkpoint = download_pretrained_model()
+
+        #logger.info("Get pretrained model and tokenizer")
+        tokenizer_class, model_class = (GPT2Tokenizer, GPT2LMHeadModel) if args.model == 'gpt2' else (OpenAIGPTTokenizer, OpenAIGPTLMHeadModel)
+        tokenizer = tokenizer_class.from_pretrained(args.model_checkpoint)
+        model = model_class.from_pretrained(args.model_checkpoint)
+        model.to(args.device)
+        add_special_tokens_(model, tokenizer)
+
+
+        #logger.info("Sample a personality")
+        dataset = get_dataset(tokenizer, args.dataset_path, args.dataset_cache)
+        personalities = [dialog["personality"] for dialog in dataset]
+        personality = random.choice(personalities)
+        print("Selected personality: ", tokenizer.decode(chain(*personality)))
+
+        if args.conv_limit:
+          conv_len = args.conv_limit
+        else:
+          conv_len = -1
+
+        utt = 0
+        text_summary = []
+        while utt != conv_len:
             raw_text = input(">>> ")
+            while not raw_text:
+                print('Prompt should not be empty!')
+                raw_text = input(">>> ")
+            history.append(tokenizer.encode(raw_text))
+            text_summary.append(raw_text)
+            with torch.no_grad():
+                out_ids = sample_sequence(personality, history, tokenizer, model, args)
+            history.append(out_ids)
+            history = history[-(2*args.max_history+1):]
+            out_text = tokenizer.decode(out_ids, skip_special_tokens=True)
+            print(out_text)
+            utt = utt + 1
+            if utt == conv_len:
+                if out_text.endswith("?"):
+                    utt = utt - 1
+
+        # generate emotion
+        raw_text = 'exit chat'
         history.append(tokenizer.encode(raw_text))
-        text_summary.append(raw_text)
         with torch.no_grad():
             out_ids = sample_sequence(personality, history, tokenizer, model, args)
         history.append(out_ids)
         history = history[-(2*args.max_history+1):]
         out_text = tokenizer.decode(out_ids, skip_special_tokens=True)
-        print(out_text)
-        utt = utt + 1
-        if utt == conv_len:
-            if out_text.endswith("?"):
-                utt = utt - 1
+        print("\n" + "Chat Emotion: " + out_text)
 
-    # generate emotion
-    raw_text = 'exit chat'
-    history.append(tokenizer.encode(raw_text))
-    with torch.no_grad():
-        out_ids = sample_sequence(personality, history, tokenizer, model, args)
-    history.append(out_ids)
-    history = history[-(2*args.max_history+1):]
-    out_text = tokenizer.decode(out_ids, skip_special_tokens=True)
-    print("\n" + "Chat Emotion: " + out_text)
+        # generate summary
+        text = ".".join(text_summary)
+        summary = summarizer(text, max_length=50)
+        print("\n" + "Summary:\n" + random.choice(sents) + create_reflection(summary[0]['summary_text']))
 
-    # generate summary
-    text = ".".join(text_summary)
-    summary = summarizer(text, max_length=50)
-    print("\n" + "Summary:\n" + random.choice(sents) + create_reflection(summary[0]['summary_text']))
+        # generate a supporting response to the summary
+        raw_text = 'summarize-chat'
+        history.append(tokenizer.encode(raw_text))
+        with torch.no_grad():
+            out_ids = sample_sequence(personality, history, tokenizer, model, args)
+        history.append(out_ids)
+        history = history[-(2*args.max_history+1):]
+        out_text = tokenizer.decode(out_ids, skip_special_tokens=True)
+        print("\n" + "Response: " + out_text)
 
-    # generate a supporting response to the summary
-    raw_text = 'summarize-chat'
-    history.append(tokenizer.encode(raw_text))
-    with torch.no_grad():
-        out_ids = sample_sequence(personality, history, tokenizer, model, args)
-    history.append(out_ids)
-    history = history[-(2*args.max_history+1):]
-    out_text = tokenizer.decode(out_ids, skip_special_tokens=True)
-    print("\n" + "Response: " + out_text)
+    elif raw_text == "2":
+        print(random.choice(initial))
+        raw_text = input(">>> ")
+        scores = sentiment.polarity_scores(raw_text)
+        if scores['pos'] > scores['neg']:
+            print("Great, here is a recipe for you ...")
+            create_recipe()
+            raw_text = input(">>> ")
+        elif scores['neg'] > scores['pos']:
+            print("ok, then maybe you will like to chat with the counsellor. Please choose option 1. Thank you.")
+        else:
+            print("I could not understand what you are asking.")
+
+    else:
+        print("Please select the correct choice.")
 
 if __name__ == "__main__":
     run()
