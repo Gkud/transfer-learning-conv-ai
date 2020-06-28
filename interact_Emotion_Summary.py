@@ -18,6 +18,7 @@ from utils import get_dataset, download_pretrained_model
 
 import nltk
 nltk.download('vader_lexicon')
+nltk.download('punkt')
 from nltk import word_tokenize
 from nltk.sentiment.vader import SentimentIntensityAnalyzer
 sentiment = SentimentIntensityAnalyzer()
